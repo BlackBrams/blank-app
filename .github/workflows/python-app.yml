@@ -1,0 +1,294 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime
+from dateutil.relativedelta import relativedelta
+import requests
+
+
+# Function to get stock data
+def get_stock_data(symbol, start_date, end_date):
+    data = yf.download(symbol, start=start_date, end=end_date)
+    return data
+
+
+# Function to calculate moving average
+def calculate_moving_average(series, window):
+    return series.rolling(window=window).mean()
+
+
+# Function to calculate RSI
+def calculate_rsi(series, period=14):
+    delta = series.diff(1)
+    gain = delta.where(delta > 0, 0).fillna(0)
+    loss = -delta.where(delta < 0, 0).fillna(0)
+    average_gain = gain.rolling(window=period).mean()
+    average_loss = loss.rolling(window=period).mean()
+    rs = average_gain / average_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+
+# Function to calculate MACD
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    exp1 = series.ewm(span=fast, adjust=False).mean()
+    exp2 = series.ewm(span=slow, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return macd, signal_line
+
+
+# Function to calculate Bollinger Bands
+def calculate_bollinger_bands(series, window=20, num_std=2):
+    rolling_mean = series.rolling(window=window).mean()
+    rolling_std = series.rolling(window=window).std()
+    upper_band = rolling_mean + (rolling_std * num_std)
+    lower_band = rolling_mean - (rolling_std * num_std)
+    return upper_band, rolling_mean, lower_band
+
+
+# Function to get company information
+def get_company_info(symbol):
+    ticker = yf.Ticker(symbol)
+    return ticker.info
+
+
+# Function to plot stock data
+def plot_stock_data(df, symbol, show_bollinger_bands, show_rsi, show_macd, show_moving_average):
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.02,
+                        row_heights=[0.5, 0.2, 0.15, 0.15],
+                        subplot_titles=(f"{symbol} Price", "Volume", "RSI", "MACD"))
+
+    # Candlestick chart for price data
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
+                                 low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+
+    # Add Bollinger Bands
+    if show_bollinger_bands:
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper_BB'], line=dict(color='rgba(255, 255, 255, 0.75)', width=1),
+                                 name='Upper BB', legendgroup='BB'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower_BB'], line=dict(color='rgba(255, 255, 255, 0.75)', width=1),
+                                 name='Lower BB', legendgroup='BB'), row=1, col=1)
+
+    # Add Moving Average
+    if show_moving_average:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MA_20'], line=dict(color='rgba(255, 255, 255, 0.75)', width=1),
+                                 name='20-day MA', legendgroup='MA'), row=1, col=1)
+
+    # Volume chart
+    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='rgba(0, 150, 255, 0.6)'), row=2,
+                  col=1)
+
+    # RSI
+    if show_rsi:
+        fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=1),
+                                 name='RSI'), row=3, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+
+    # MACD
+    if show_macd:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], line=dict(color='blue', width=1),
+                                 name='MACD'), row=4, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], line=dict(color='orange', width=1),
+                                 name='Signal Line'), row=4, col=1)
+        fig.add_bar(x=df.index, y=df['MACD_Histogram'], name='MACD Histogram', marker_color='gray', row=4, col=1)
+
+    fig.update_layout(height=1000, width=1200, template='plotly_dark',
+                      title_text=f"{symbol} Technical Analysis Dashboard",
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_xaxes(rangeslider_visible=False)
+    return fig
+
+
+# Function to authenticate
+def authenticate(username, password):
+    correct_username = "TomG"
+    correct_password = "21035667"
+    return username == correct_username and password == correct_password
+
+
+# Function to parse period into date offset
+def parse_period_to_offset(period):
+    if period.endswith('mo'):
+        months = int(period[:-2])
+        return relativedelta(months=months)
+    elif period.endswith('y'):
+        years = int(period[:-1])
+        return relativedelta(years=years)
+    else:
+        days = int(period[:-1])
+        return relativedelta(days=days)
+
+
+# Main Streamlit application
+def main():
+    st.set_page_config(page_title="BlackAbrams Trading Analytics", layout="wide")
+
+    # Custom CSS for styling
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&display=swap');
+
+        .reportview-container {
+            background: #0e1117;
+            color: #ffffff;
+        }
+        .main {
+            background-color: #0e1117;
+        }
+        .sidebar .sidebar-content {
+            background-color: #1a1c23;
+        }
+        .widget-label {
+            color: #ffffff !important;
+        }
+        .stTextInput > div > div > input {
+            color: #ffffff;
+        }
+        .stSelectbox > div > div > select {
+            color: #ffffff;
+        }
+        .stNumberInput > div > div > input {
+            color: #ffffff;
+        }
+        h1, h2, h3, h4, h5, h6 {
+            color: #ffffff !important;
+            font-family: 'Orbitron', sans-serif;
+        }
+        .stAlert > div {
+            background-color: #2b313e;
+            color: #ffffff;
+        }
+        .stButton > button {
+            background-color: #ffffff;
+            color: #000000;
+        }
+        .stProgress > div > div > div > div {
+            background-color: #ffffff;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Initialize session state
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+
+    if st.session_state.authenticated:
+        # User is authenticated, show the main app
+        st.sidebar.title("Configuration")
+        symbol = st.sidebar.text_input("Enter Stock Symbol", value="AAPL").upper()
+        period = st.sidebar.selectbox("Select Time Period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
+
+        st.sidebar.subheader('Select Indicators')
+        show_bollinger_bands = st.sidebar.checkbox('Bollinger Bands', value=True)
+        show_rsi = st.sidebar.checkbox('RSI', value=True)
+        show_macd = st.sidebar.checkbox('MACD', value=True)
+        show_moving_average = st.sidebar.checkbox('Moving Average', value=True)
+
+        if st.sidebar.button('Start Analytics'):
+            end_date = datetime.now()
+            offset = parse_period_to_offset(period)
+            start_date = end_date - offset
+
+            if symbol:
+                try:
+                    data = get_stock_data(symbol, start_date, end_date)
+
+                    if data.empty:
+                        st.error(f"No data found for the symbol: {symbol}")
+                    else:
+                        df = data.copy()
+
+                        # Calculate indicators based on user selection
+                        if show_moving_average or show_bollinger_bands:
+                            df['MA_20'] = calculate_moving_average(df['Close'], 20)
+
+                        if show_rsi:
+                            df['RSI'] = calculate_rsi(df['Close'])
+
+                        if show_macd:
+                            df['MACD'], df['Signal_Line'] = calculate_macd(df['Close'])
+                            df['MACD_Histogram'] = df['MACD'] - df['Signal_Line']
+
+                        if show_bollinger_bands:
+                            df['Upper_BB'], df['MA_20'], df['Lower_BB'] = calculate_bollinger_bands(df['Close'])
+
+                        # Company Info
+                        info = get_company_info(symbol)
+
+                        # Dashboard Layout
+                        col1, col2 = st.columns([2, 1])
+
+                        with col1:
+                            st.plotly_chart(plot_stock_data(df, symbol, show_bollinger_bands, show_rsi, show_macd, show_moving_average), use_container_width=True)
+
+                        with col2:
+                            st.subheader("Company Overview")
+                            st.write(f"**Name:** {info.get('longName', 'N/A')}")
+                            st.write(f"**Sector:** {info.get('sector', 'N/A')}")
+                            st.write(f"**Industry:** {info.get('industry', 'N/A')}")
+                            market_cap = info.get('marketCap', 'N/A')
+                            if market_cap != 'N/A':
+                                market_cap = f"${market_cap:,}"
+                            st.write(f"**Market Cap:** {market_cap}")
+                            pe_ratio = info.get('trailingPE', 'N/A')
+                            if pe_ratio != 'N/A':
+                                pe_ratio = f"{pe_ratio:.2f}"
+                            st.write(f"**P/E Ratio:** {pe_ratio}")
+                            fifty_two_week_high = info.get('fiftyTwoWeekHigh', 'N/A')
+                            if fifty_two_week_high != 'N/A':
+                                fifty_two_week_high = f"${fifty_two_week_high:.2f}"
+                            st.write(f"**52 Week High:** {fifty_two_week_high}")
+                            fifty_two_week_low = info.get('fiftyTwoWeekLow', 'N/A')
+                            if fifty_two_week_low != 'N/A':
+                                fifty_two_week_low = f"${fifty_two_week_low:.2f}"
+                            st.write(f"**52 Week Low:** {fifty_two_week_low}")
+
+                            st.subheader("Key Statistics")
+                            latest_price = df['Close'].iloc[-1]
+                            prev_close = df['Close'].iloc[-2]
+                            price_change = latest_price - prev_close
+                            price_change_pct = (price_change / prev_close) * 100
+
+                            st.metric("Current Price", f"${latest_price:.2f}",
+                                      f"{price_change:.2f} ({price_change_pct:.2f}%)")
+                            st.metric("Volume", f"{df['Volume'].iloc[-1]:,}")
+
+                            if show_rsi:
+                                st.metric("RSI", f"{df['RSI'].iloc[-1]:.2f}")
+                            if show_macd:
+                                st.metric("MACD", f"{df['MACD'].iloc[-1]:.2f}")
+
+                            if st.button("Logout"):
+                                st.session_state.authenticated = False
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+            else:
+                st.warning("Please enter a stock symbol to start the analysis.")
+        else:
+            st.warning("Click 'Start Analytics' to begin analysis.")
+
+    else:
+        # User is not authenticated, show the login form
+        st.markdown("<h1 style='text-align: center;'>BlackAbrams Trading Analytics</h1>", unsafe_allow_html=True)
+
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            if st.button("Login"):
+                if authenticate(username, password):
+                    st.session_state.authenticated = True
+                else:
+                    st.error("Invalid username or password")
+
+
+if __name__ == '__main__':
+    main()
